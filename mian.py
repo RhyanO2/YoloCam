@@ -13,7 +13,7 @@ CALIB_FILE = "calibration.json"
 CAM_INDEX = 0
 WIDTH, HEIGHT = 1920, 1080
 
-# COCO ids -> names (apenas os que usamos)
+# COCO IDS
 CLASS_NAMES = {
     0: "person",
     73: "book",
