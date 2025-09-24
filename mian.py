@@ -1,148 +1,134 @@
-# salva como yolo_obj_distance_calib.py
+# face_obj_distance_height.py
 from ultralytics import YOLO
 import cv2
-import math
-import numpy as np
 import json
 import os
 import time
 
 # ---------- CONFIG ----------
-MODEL_PATH = "yolo-Weights/yolov8n.pt"
-CALIB_FILE = "calibration.json"
+MODEL_FACE = "yolo-Weights/yolov8n-face-lindevs.pt"
+MODEL_OBJ  = "yolo-Weights/yolov8n.pt"
+CALIB_FILE = "calibration_rect.json"
 CAM_INDEX = 0
-WIDTH, HEIGHT = 1920, 1080
+WIDTH, HEIGHT = 1280, 720
 
-# COCO IDS
 CLASS_NAMES = {
-    0: "person",
-    73: "book",
-    67: "cell phone",
-    64: "mouse",
-    56: "chair"
+    "face": "Face",
+    67: "Cell Phone",
+    39: "Bottle"
 }
 
-# tamanhos reais aproximados (cm) - ajuste conforme seu objeto real
 REAL_SIZES_CM = {
-    0: 170,  # person (altura média) - ideal calibrar com distância conhecida
-    73: 24,  # book (altura típica) - ajuste conforme seu livro
-    67: 15,  # cellphone (altura) - ajuste conforme seu aparelho
-    64: 11,  # mouse (comprimento) - ajuste
-    56: 90   # chair (altura do encosto) - ajuste
+    "face": 24,
+    67: 15,
+    39: 25
 }
 # ----------------------------
 
 def load_calibration(file):
-    if os.path.exists(file):
-        with open(file, "r") as f:
-            return json.load(f)
-    return {}
+    return json.load(open(file)) if os.path.exists(file) else {}
 
 def save_calibration(file, data):
     with open(file, "w") as f:
         json.dump(data, f, indent=2)
 
-# Carrega modelo e câmera
+# Inicializa câmera e modelos
 cap = cv2.VideoCapture(CAM_INDEX, cv2.CAP_DSHOW)
 cap.set(3, WIDTH)
 cap.set(4, HEIGHT)
 
-model = YOLO(MODEL_PATH)
+model_face = YOLO(MODEL_FACE)
+model_obj  = YOLO(MODEL_OBJ)
 
-# focal_lengths (pixels) por classe -> armazenado como strings em json
-focals = load_calibration(CALIB_FILE)  # ex: {"0": 1234.5, "67": 987.6}
-last_dist = {}  # suavização por classe
+focals = load_calibration(CALIB_FILE)
+last_dist = {}
+prev_time = time.time()
 
-print("Pressione 'c' para calibrar o objeto maior detectado (precisa informar distância conhecida).")
+print("Pressione 'c' para calibrar objetos ou face.")
 print("Pressione 'q' para sair.")
 
 while True:
-    ok, frame = cap.read()
-    if not ok:
+    ret, frame = cap.read()
+    if not ret:
         break
 
     detections = []
-    results = model(frame, stream=True)
-    for r in results:
+
+    # ---- Detecta rosto ----
+    for r in model_face(frame, stream=True):
         for box in r.boxes:
-            x1, y1, x2, y2 = box.xyxy[0]
-            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            conf = float(box.conf[0])
+            if conf > 0.6:
+                # Reduz bbox 20% nas bordas para evitar cabelo/ombros
+                h = y2 - y1
+                y_center = y1 + h // 2
+                new_h = int(h * 0.8)
+                y1_new = max(0, y_center - new_h // 2)
+                y2_new = min(HEIGHT, y_center + new_h // 2)
+                detections.append({"cls": "face", "conf": conf, "box": (x1, y1_new, x2, y2_new)})
+
+    # ---- Detecta objetos ----
+    for r in model_obj(frame, stream=True):
+        for box in r.boxes:
             cls = int(box.cls[0])
             conf = float(box.conf[0])
-            if cls in CLASS_NAMES and conf > 0.25:
+            if cls in CLASS_NAMES and conf > 0.4:
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
                 detections.append({"cls": cls, "conf": conf, "box": (x1, y1, x2, y2)})
 
-    # desenhar e calcular distância se existir calibração
+    # ---- Desenha e calcula distâncias e altura real ----
     for det in detections:
         cls = det["cls"]
-        name = CLASS_NAMES[cls]
+        name = CLASS_NAMES[cls] if cls in CLASS_NAMES else str(cls)
         x1, y1, x2, y2 = det["box"]
         conf = det["conf"]
-        color = (0,255,0) if cls == 0 else (255,0,0)  # pessoa verde, outros azul
-        cv2.rectangle(frame, (x1,y1), (x2,y2), color, 2)
+        color = (0,255,0) if cls=="face" else (255,0,0)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
-        obj_h_px = max(1, y2 - y1)  # evitar div por zero
+        obj_h_px = max(1, y2 - y1)
+        real_h_default = REAL_SIZES_CM[cls] if isinstance(cls,int) else REAL_SIZES_CM["face"]
 
+        # Distância
         if str(cls) in focals:
-            focal = float(focals[str(cls)])
-            real_h = REAL_SIZES_CM.get(cls, None)
-            if real_h is None:
-                text = f"{name} {conf:.2f} - sem tamanho real"
-            else:
-                dist_cm = (real_h * focal) / obj_h_px
-                # suavizar
-                prev = last_dist.get(cls, None)
-                if prev is None:
-                    smooth = dist_cm
-                else:
-                    alpha = 0.35
-                    smooth = prev * (1 - alpha) + dist_cm * alpha
-                last_dist[cls] = smooth
-                text = f"{name} {conf:.2f} {int(smooth)} cm"
+            focal = focals[str(cls)]
+            dist_cm = (real_h_default * focal) / obj_h_px
+            dist_cm = last_dist.get(cls, dist_cm) * 0.65 + dist_cm * 0.35
+            last_dist[cls] = dist_cm
+            # Altura real baseada na distância e bbox
+            real_height_cm = (obj_h_px * dist_cm) / focal
+            text = f"{name} {conf:.2f} - dist {int(dist_cm)} cm - altura {real_height_cm:.1f} cm"
         else:
             text = f"{name} {conf:.2f} - pressione 'c' p/ calibrar"
 
-        cv2.putText(frame, text, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+        y_text = max(10, y1-10)
+        cv2.putText(frame, text, (x1, y_text), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
-    cv2.imshow("Deteccao + Distancia", frame)
+    # ---- FPS ----
+    curr_time = time.time()
+    fps = 1 / (curr_time - prev_time)
+    prev_time = curr_time
+    cv2.putText(frame, f"FPS: {int(fps)}", (10, HEIGHT-20), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
+
+    cv2.imshow("Face + Objetos + Altura e Distancia", frame)
     key = cv2.waitKey(1) & 0xFF
 
-    if key == ord('q'):
+    # ---- Sair ----
+    if key==ord('q'):
         break
 
-    if key == ord('c'):
-        # pegar maior detecção (por area)
-        if not detections:
-            print("Nenhum objeto detectado para calibrar. Mostre o objeto e tente novamente.")
-            continue
-        # escolhe a detecção com maior area
-        best = max(detections, key=lambda d: (d["box"][2]-d["box"][0])*(d["box"][3]-d["box"][1]))
-        cls = best["cls"]
-        name = CLASS_NAMES[cls]
-        x1, y1, x2, y2 = best["box"]
-        obj_h_px = max(1, y2 - y1)
-        print(f"Calibrando classe {cls} -> {name}. Altura do bbox (px): {obj_h_px}")
-
-        # decidir tamanho real
-        default_real = REAL_SIZES_CM.get(cls, None)
-        if default_real:
-            use_default = input(f"Tamanho real padrão para '{name}' é {default_real} cm. Usar esse valor? (y/n): ").strip().lower()
-            if use_default == 'y' or use_default == '':
-                real_h_cm = float(default_real)
-            else:
-                real_h_cm = float(input("Digite o tamanho real do objeto em cm (ex: 15): ").strip())
-        else:
-            real_h_cm = float(input("Digite o tamanho real do objeto em cm (ex: 15): ").strip())
-
-        # distância conhecida
-        known_dist = float(input("Digite a distância conhecida (cm) entre câmera e objeto (ex: 100): ").strip())
-
-        # calcular focal
-        focal_px = (obj_h_px * known_dist) / real_h_cm
-        focals[str(cls)] = float(focal_px)
+    # ---- Calibração ----
+    if key==ord('c'):
+        for det in detections:
+            cls = det["cls"]
+            x1, y1, x2, y2 = det["box"]
+            obj_h_px = max(1, y2 - y1)
+            real_h_default = REAL_SIZES_CM[cls] if isinstance(cls,int) else REAL_SIZES_CM["face"]
+            known_dist = float(input(f"Digite distância conhecida da câmera para {CLASS_NAMES[cls]} (cm): ").strip())
+            focal_px = (obj_h_px * known_dist) / real_h_default
+            focals[str(cls)] = focal_px
         save_calibration(CALIB_FILE, focals)
-        print(f"Calibração salva: classe {cls} ({name}) -> focal = {focal_px:.2f} px")
-        time.sleep(0.5)
+        print("✅ Calibração salva.")
 
 cap.release()
 cv2.destroyAllWindows()
