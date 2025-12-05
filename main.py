@@ -10,7 +10,7 @@ MODEL_FACE = "yolo-Weights/yolov8n-face-lindevs.pt"
 MODEL_OBJ  = "yolo-Weights/yolov8n.pt"
 CALIB_FILE = "calibration_rect.json"
 CAM_INDEX = 0
-WIDTH, HEIGHT = 1280, 720
+WIDTH, HEIGHT = 1920, 1080
 
 CLASS_NAMES = {
     "face": "Face",
@@ -60,7 +60,6 @@ while True:
             x1, y1, x2, y2 = map(int, box.xyxy[0])
             conf = float(box.conf[0])
             if conf > 0.6:
-                # Reduz bbox 20% nas bordas para evitar cabelo/ombros
                 h = y2 - y1
                 y_center = y1 + h // 2
                 new_h = int(h * 0.8)
@@ -83,7 +82,7 @@ while True:
         name = CLASS_NAMES[cls] if cls in CLASS_NAMES else str(cls)
         x1, y1, x2, y2 = det["box"]
         conf = det["conf"]
-        color = (0,255,0) if cls=="face" else (255,0,0)
+        color = (180,70,0) if cls=="face" else (255,120,0)
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
         obj_h_px = max(1, y2 - y1)
@@ -97,7 +96,8 @@ while True:
             last_dist[cls] = dist_cm
             # Altura real baseada na distância e bbox
             real_height_cm = (obj_h_px * dist_cm) / focal
-            text = f"{name} {conf:.2f} - dist {int(dist_cm)} cm - altura {real_height_cm:.1f} cm"
+            text = f"Object: {name} - dist {int(dist_cm)} cm - height {real_height_cm:.1f} cm"
+            # text = f"Rhyan's face - height {real_height_cm:.1f} cm"
         else:
             text = f"{name} {conf:.2f} - pressione 'c' p/ calibrar"
 
@@ -110,7 +110,7 @@ while True:
     prev_time = curr_time
     cv2.putText(frame, f"FPS: {int(fps)}", (10, HEIGHT-20), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
 
-    cv2.imshow("Face + Objetos + Altura e Distancia", frame)
+    cv2.imshow("Object Detection", frame)
     key = cv2.waitKey(1) & 0xFF
 
     # ---- Sair ----
