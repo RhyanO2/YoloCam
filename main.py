@@ -1,4 +1,3 @@
-# face_obj_distance_height.py
 from ultralytics import YOLO
 import cv2
 import json
